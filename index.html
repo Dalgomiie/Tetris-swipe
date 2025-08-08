@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Tetris — Swipe Controls</title>
+<style>
+  :root{
+    --bg:#111216;
+    --panel:#0f1013;
+    --bezel:#26272b;
+    --screen:#0b0c10;
+    --text:#eaeaea;
+  }
+  @font-face{
+    font-family:'PressStart';
+    src:local('Press Start 2P'), url('https://fonts.cdnfonts.com/s/15064/PressStart2P-Regular.woff') format('woff');
+    font-display:swap;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color: transparent;}
+  html,body{height:100%; margin:0; background:var(--bg); color:var(--text); font-family:PressStart, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;}
+  .wrap{display:flex; flex-direction:column; align-items:center; gap:10px; padding:12px; max-width:880px; margin:0 auto;}
+  .header{opacity:.9; font-size:12px; letter-spacing:1.5px;}
+  .cabinet{display:flex; gap:10px; width:100%; justify-content:center; flex-wrap:wrap;}
+  .screen{background:linear-gradient(180deg,#0c0d11,#08090c 70%); border:6px solid var(--bezel); border-radius:12px; padding:10px; box-shadow:inset 0 4px 12px #0008, 0 12px 24px #0009;}
+  .gridwrap{display:flex; gap:12px;}
+  canvas{image-rendering: pixelated; image-rendering: crisp-edges; background:var(--screen); display:block;}
+  .panel{min-width:180px; background:var(--panel); border:4px solid var(--bezel); border-radius:12px; padding:10px; box-shadow: inset 0 6px 12px #0008;}
+  .panel h3{margin:0 0 6px 0; font-size:12px; color:#c9c9c9;}
+  .panel .value{font-size:12px; line-height:1.6;}
+  .panel .tiny{font-size:10px; opacity:.75}
+  .footer{font-size:10px; opacity:.7; text-align:center; padding-bottom:14px;}
+  @media (max-width:720px){
+    .panel{min-width:150px}
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="header">TETRIS — <span style="font-size:10px; opacity:.8">SWIPE EDITION</span></div>
+    <div class="cabinet">
+      <div class="screen">
+        <div class="gridwrap">
+          <canvas id="game" width="200" height="400"></canvas>
+          <div class="panel">
+            <h3>Status</h3>
+            <div class="value">Score: <span id="score">0</span></div>
+            <div class="value">Level: <span id="level">0</span></div>
+            <div class="value">Lines: <span id="lines">0</span></div>
+            <div class="value tiny" style="margin-top:6px">
+              Swipe ◀/▶ = Move<br>
+              Swipe ▼ = Soft Drop<br>
+              Swipe ▲ = Hard Drop<br>
+              Tap = Rotate CW<br>
+              Double‑tap = Rotate CCW<br>
+              Long‑press = Hold<br>
+              Two‑finger tap = Pause
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="footer">Tip: Add to Home Screen for full‑screen play. Keyboard also works on desktop.</div>
+  </div>
+
+<script>
+/* ===== TETRIS (vanilla JS) — Swipe Controls ===== */
+const COLS=10, ROWS=20, TILE=20;
+const canvas=document.getElementById('game');
+const ctx=canvas.getContext('2d');
+canvas.width = COLS*TILE;
+canvas.height = ROWS*TILE;
+
+const scoreEl=document.getElementById('score');
+const levelEl=document.getElementById('level');
+const linesEl=document.getElementById('lines');
+
+const COLORS={ I:'#00bcd4', J:'#3f51b5', L:'#ff9800', O:'#ffd54f', S:'#29e06f', T:'#ff4081', Z:'#e53935' };
+
+const SHAPES={
+  I:[[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]],
+  J:[[1,0,0],[1,1,1],[0,0,0]],
+  L:[[0,0,1],[1,1,1],[0,0,0]],
+  O:[[1,1],[1,1]],
+  S:[[0,1,1],[1,1,0],[0,0,0]],
+  T:[[0,1,0],[1,1,1],[0,0,0]],
+  Z:[[1,1,0],[0,1,1],[0,0,0]]
+};
+
+// RNG: 7-bag
+class Bag{
+  constructor(){this.bag=[];}
+  next(){
+    if(this.bag.length===0){
+      this.bag=['I','J','L','O','S','T','Z'];
+      for(let i=this.bag.length-1;i>0;i--){
+        const j=Math.floor(Math.random()*(i+1));
+        [this.bag[i],this.bag[j]]=[this.bag[j],this.bag[i]];
+      }
+    }
+    return this.bag.pop();
+  }
+}
+
+class Piece{
+  constructor(type){
+    this.type=type;
+    this.matrix=SHAPES[type].map(r=>r.slice());
+    this.x=3;
+    this.y= type==='I' ? -1 : 0;
+  }
+}
+
+const board = Array.from({length:ROWS},()=>Array(COLS).fill(null));
+let bag=new Bag();
+let current=new Piece(bag.next());
+let nextType=bag.next();
+let holdType=null;
+let canHold=true;
+let score=0, lines=0, level=0;
+let dropCounter=0;
+let lastTime=0;
+let paused=false;
+let gameOver=false;
+
+const GRAVITY_MS=[1000,793,618,473,355,262,197,151,116,87,66,50,38,29,22,16,12,9,7,5];
+
+function rotate(matrix, dir=1){
+  const m=matrix.map(r=>r.slice());
+  for(let y=0;y<m.length;y++) for(let x=0;x<y;x++) [m[x][y],m[y][x]]=[m[y][x],m[x][y]];
+  if(dir>0) m.forEach(row=>row.reverse()); else m.reverse();
+  return m;
+}
+
+function collide(b,pieceX=current.x,pieceY=current.y,matrix=current.matrix){
+  for(let y=0;y<matrix.length;y++){
+    for(let x=0;x<matrix[y].length;x++){
+      if(matrix[y][x]){
+        const by=y+pieceY, bx=x+pieceX;
+        if(bx<0 || bx>=COLS || by>=ROWS) return true;
+        if(by>=0 && b[by][bx]) return true;
+      }
+    }
+  }
+  return false;
+}
+
+function tryRotate(dir){
+  const m=rotate(current.matrix, dir);
+  const kicks=[0,-1,1,-2,2];
+  for(const k of kicks){
+    if(!collide(board, current.x+k, current.y, m)){
+      current.matrix=m; current.x+=k; return;
+    }
+  }
+}
+
+function merge(){
+  for(let y=0;y<current.matrix.length;y++){
+    for(let x=0;x<current.matrix[y].length;x++){
+      if(current.matrix[y][x]){
+        const by=current.y+y, bx=current.x+x;
+        if(by>=0) board[by][bx]=current.type; else { gameOver=true; paused=true; }
+      }
+    }
+  }
+}
+
+function sweep(){
+  let cleared=0;
+  for(let y=ROWS-1;y>=0;){
+    if(board[y].every(v=>v)){
+      board.splice(y,1);
+      board.unshift(Array(COLS).fill(null));
+      cleared++;
+    }else y--;
+  }
+  if(cleared>0){
+    const points=[0,40,100,300,1200][cleared]*(level+1);
+    score+=points;
+    lines+=cleared;
+    level=Math.min(19, Math.floor(lines/10));
+    updateHUD();
+  }
+}
+
+function hardDrop(){
+  while(!collide(board, current.x, current.y+1)) current.y++;
+  tickDown();
+}
+
+function doHold(){
+  if(!canHold) return;
+  canHold=false;
+  if(holdType===null){
+    holdType=current.type;
+    current=new Piece(nextType);
+    nextType=bag.next();
+  }else{
+    const t=holdType;
+    holdType=current.type;
+    current=new Piece(t);
+  }
+}
+
+function spawn(){
+  current=new Piece(nextType);
+  nextType=bag.next();
+  canHold=true;
+  if(collide(board)) { gameOver=true; paused=true; }
+}
+
+function move(dx){
+  if(!collide(board, current.x+dx, current.y)) current.x+=dx;
+}
+function softDrop(){
+  if(!collide(board, current.x, current.y+1)){ current.y++; score+=1; updateHUD(); }
+  else tickDown();
+}
+function tickDown(){
+  if(!collide(board, current.x, current.y+1)){ current.y++; }
+  else{ merge(); sweep(); spawn(); }
+}
+
+function ghostY(){
+  let y=current.y;
+  while(!collide(board, current.x, y+1)) y++;
+  return y;
+}
+
+function drawBlock(g, x,y, color){
+  const s=TILE;
+  g.fillStyle=color;
+  g.fillRect(x*s, y*s, s, s);
+  g.fillStyle='rgba(255,255,255,0.12)';
+  g.fillRect(x*s, y*s, s, s*0.18);
+  g.fillStyle='rgba(0,0,0,0.3)';
+  g.fillRect(x*s, y*s+s*0.82, s, s*0.18);
+  g.strokeStyle='#000';
+  g.lineWidth=1;
+  g.strokeRect(x*s+0.5, y*s+0.5, s-1, s-1);
+}
+
+function render(){
+  ctx.clearRect(0,0,canvas.width, canvas.height);
+  // grid
+  ctx.strokeStyle='#15161a';
+  ctx.lineWidth=1;
+  for(let x=0;x<=COLS;x++){ ctx.beginPath(); ctx.moveTo(x*TILE+0.5,0); ctx.lineTo(x*TILE+0.5,canvas.height); ctx.stroke(); }
+  for(let y=0;y<=ROWS;y++){ ctx.beginPath(); ctx.moveTo(0,y*TILE+0.5); ctx.lineTo(canvas.width,y*TILE+0.5); ctx.stroke(); }
+
+  // board
+  for(let y=0;y<ROWS;y++){
+    for(let x=0;x<COLS;x++){
+      const t=board[y][x];
+      if(t) drawBlock(ctx,x,y,COLORS[t]);
+    }
+  }
+  // ghost
+  const gy=ghostY();
+  ctx.globalAlpha=0.18;
+  for(let y=0;y<current.matrix.length;y++){
+    for(let x=0;x<current.matrix[y].length;x++){
+      if(current.matrix[y][x]){
+        const gx=current.x+x, gy2=gy+y;
+        if(gy2>=0) drawBlock(ctx, gx, gy2, '#ffffff');
+      }
+    }
+  }
+  ctx.globalAlpha=1;
+
+  // piece
+  for(let y=0;y<current.matrix.length;y++){
+    for(let x=0;x<current.matrix[y].length;x++){
+      if(current.matrix[y][x]){
+        const by=current.y+y, bx=current.x+x;
+        if(by>=0) drawBlock(ctx,bx,by,COLORS[current.type]);
+      }
+    }
+  }
+}
+
+function updateHUD(){
+  scoreEl.textContent=score;
+  levelEl.textContent=level;
+  linesEl.textContent=lines;
+}
+
+function restart(){
+  for(let y=0;y<ROWS;y++) for(let x=0;x<COLS;x++) board[y][x]=null;
+  bag=new Bag();
+  current=new Piece(bag.next());
+  nextType=bag.next();
+  holdType=null; canHold=true;
+  score=0; lines=0; level=0;
+  dropCounter=0; lastTime=0; paused=false; gameOver=false;
+  updateHUD();
+}
+
+function update(time=0){
+  const dt=time-lastTime; lastTime=time;
+  if(!paused){
+    dropCounter+=dt;
+    const grav = GRAVITY_MS[Math.min(level, GRAVITY_MS.length-1)];
+    if(dropCounter>grav){ tickDown(); dropCounter=0; }
+    render();
+  }
+  requestAnimationFrame(update);
+}
+
+// Keyboard fallback (desktop)
+document.addEventListener('keydown', (e)=>{
+  if(e.repeat) return;
+  const k=e.key.toLowerCase();
+  if(k==='arrowleft') move(-1);
+  else if(k==='arrowright') move(1);
+  else if(k==='arrowdown') softDrop();
+  else if(k==='z') tryRotate(-1);
+  else if(k==='x' || k==='arrowup') tryRotate(1);
+  else if(k===' ') { e.preventDefault(); hardDrop(); }
+  else if(k==='shift') doHold();
+  else if(k==='p') paused=!paused;
+  else if(k==='r') restart();
+});
+
+/* ===== Touch: swipe/tap gestures =====
+   - Swipe left/right: move
+   - Swipe down: soft drop
+   - Swipe up: hard drop
+   - Tap: rotate CW
+   - Double-tap (<=260ms, <=12px): rotate CCW
+   - Long-press (>=400ms, <=8px): Hold
+   - Two-finger tap: Pause
+*/
+let startX=0, startY=0, startT=0, touching=false;
+let lastTapT=0, lastTapX=0, lastTapY=0;
+let longPressTimer=null;
+let twoFinger=false;
+
+function touchStart(e){
+  if(e.touches.length===2){
+    twoFinger=true;
+    return;
+  } else { twoFinger=false; }
+
+  const t=e.touches[0];
+  touching=true;
+  startX=t.clientX; startY=t.clientY; startT=performance.now();
+
+  clearTimeout(longPressTimer);
+  longPressTimer=setTimeout(()=>{
+    // Long press => Hold piece
+    if(touching){
+      doHold();
+    }
+  }, 420);
+}
+
+function touchMove(e){
+  // If they move too much, cancel long-press
+  if(!touching) return;
+  const t=e.touches[0];
+  const dx=Math.abs(t.clientX-startX);
+  const dy=Math.abs(t.clientY-startY);
+  if(dx>8 || dy>8){
+    clearTimeout(longPressTimer);
+  }
+}
+
+function touchEnd(e){
+  if(twoFinger){
+    // two-finger tap toggles pause
+    paused = !paused;
+    return;
+  }
+  if(!touching) return;
+  touching=false;
+  clearTimeout(longPressTimer);
+
+  const endT=performance.now();
+  const dt=endT-startT;
+
+  // For end position, use changedTouches if available, else last known start
+  const tch=(e.changedTouches && e.changedTouches[0]) ? e.changedTouches[0] : {clientX:startX, clientY:startY};
+  const dx=tch.clientX-startX;
+  const dy=tch.clientY-startY;
+  const adx=Math.abs(dx), ady=Math.abs(dy);
+  const SWIPE_MIN=18; // pixels
+  const TAP_MAX=12;   // pixels
+
+  if(adx<TAP_MAX && ady<TAP_MAX){
+    // TAP or DOUBLE TAP
+    if(endT-lastTapT<=260 && Math.hypot(tch.clientX-lastTapX, tch.clientY-lastTapY)<=12){
+      // double tap => rotate CCW
+      tryRotate(-1);
+      lastTapT=0;
+    }else{
+      // single tap => rotate CW
+      tryRotate(1);
+      lastTapT=endT; lastTapX=tch.clientX; lastTapY=tch.clientY;
+    }
+    return;
+  }
+
+  if(adx>ady && adx>=SWIPE_MIN){
+    // horizontal swipe
+    if(dx>0) move(1);
+    else move(-1);
+  }else if(ady>=SWIPE_MIN){
+    // vertical swipe
+    if(dy>0){
+      // down
+      softDrop();
+    }else{
+      // up
+      hardDrop();
+    }
+  }
+}
+
+canvas.addEventListener('touchstart', touchStart, {passive:true});
+canvas.addEventListener('touchmove',  touchMove,  {passive:true});
+canvas.addEventListener('touchend',   touchEnd,   {passive:true});
+canvas.addEventListener('touchcancel',()=>{ touching=false; clearTimeout(longPressTimer); }, {passive:true});
+
+updateHUD();
+requestAnimationFrame(update);
+</script>
+</body>
+</html>
